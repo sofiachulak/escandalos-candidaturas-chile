@@ -1,0 +1,333 @@
+---
+title: "script"
+output:
+  word_document: default
+  html_document: default
+date: "2026-11-16"
+---
+
+#Primero cargamos los paquetes a usar y ordenar los indicadores socioeconomicoss que elegimos (ipc y desempleo) para poder hacer una base conjunta y calcular el promedio del indicador de 12 meses antes de la elección. 
+
+```{r}
+library(readxl)
+library(dplyr)
+library(lubridate)
+```
+
+```{r}
+desempleo <- read_excel("data/desempleo.xlsx", skip = 2)
+ipc <- read_excel("data/ipc.xlsx", skip = 2)
+```
+
+```{r}
+desempleo <- desempleo[, c(1, 5)]
+names(desempleo) <- c("mes", "desempleo")
+
+ipc <- ipc[, c(1, 2)]
+names(ipc) <- c("mes", "ipc")
+```
+
+```{r}
+desempleo$mes <- as.Date(desempleo$mes)
+ipc$mes <- as.Date(ipc$mes)
+
+economia <- left_join(desempleo, ipc, by = "mes")
+```
+
+```{r}
+elecciones <- data.frame(
+  eleccion = c(1989, 1993, 1993, 1999, 1999, 2005, 2005, 2009, 2009,
+               2013, 2013, 2013, 2017, 2017, 2017, 2021, 2021, 2021, 2025, 2025, 2025),
+  vuelta   = c("primera", "primaria", "primera", "primera", "segunda", "primera", "segunda", "primera", "segunda",
+               "primaria", "primera", "segunda", "primaria", "primera", "segunda",
+               "primaria", "primera", "segunda", "primaria", "primera", "segunda"),
+  fecha    = as.Date(c("1989-12-14", "1993-05-23", "1993-12-11", "1999-12-12", "2000-01-16",
+                       "2005-12-11", "2006-01-15", "2009-12-13", "2010-01-17",
+                       "2013-06-30", "2013-11-17", "2013-12-15",
+                       "2017-07-02", "2017-11-19", "2017-12-17",
+                       "2021-07-18", "2021-11-21", "2021-12-19",
+                       "2025-06-29", "2025-11-16", "2025-12-14"))
+)
+```
+
+```{r}
+elecciones$desempleo <- NA
+elecciones$ipc <- NA
+
+for (i in 1:nrow(elecciones)) {
+  mes_eleccion <- floor_date(elecciones$fecha[i], "month")
+  ventana <- filter(economia, mes >= mes_eleccion - months(12), mes < mes_eleccion)
+  elecciones$desempleo[i] <- round(mean(ventana$desempleo), 2)
+  elecciones$ipc[i] <- round(mean(ventana$ipc), 2)
+}
+```
+
+```{r}
+excel_sheets("data/base.xlsx")
+```
+```{r}
+candidatos   <- read_excel("data/base.xlsx", sheet = "candidatos")
+candidaturas <- read_excel("data/base.xlsx", sheet = "candidaturas")
+escandalos   <- read_excel("data/base.xlsx", sheet = "escandalos")
+```
+```{r}
+names(candidatos)
+names(candidaturas)
+names(escandalos)
+```
+
+```{r}
+escandalos <- read_excel("data/base.xlsx", sheet = "escandalos")
+
+names(escandalos) <- c("anio", "mes", "candidato", "genero", "escandalo",
+                       "tipo", "magnitud", "cercania", "fecha",
+                       "descripcion", "link")
+escandalos$candidato <- trimws(escandalos$candidato)
+escandalos$candidato <- tolower(escandalos$candidato)
+escandalos$candidato <- chartr("áéíóúñü", "aeiounu", escandalos$candidato)
+```
+
+```{r}
+escandalos$magnitud[is.na(escandalos$magnitud)] <- 0
+```
+
+```{r}
+escandalos$eleccion <- escandalos$anio
+escandalos$eleccion[escandalos$anio == 2000] <- 1999
+escandalos$eleccion[escandalos$anio == 2006] <- 2005
+escandalos$eleccion[escandalos$anio == 2010] <- 2009
+
+resumen <- escandalos %>%
+  group_by(eleccion, candidato) %>%
+  summarise(
+    n_escandalos = sum(escandalo),
+    magnitud_max = max(magnitud),
+    .groups = "drop"
+  )
+
+resumen$escandalo <- ifelse(resumen$n_escandalos > 0, 1, 0)
+```
+
+```{r}
+candidaturas <- read_excel("data/base.xlsx", sheet = "candidaturas")
+names(candidaturas) <- c("candidato", "anio", "vuelta", "partido", "sector",
+                         "resultado", "mecanismo", "votos")
+
+candidatos <- read_excel("data/base.xlsx", sheet = "candidatos")
+names(candidatos) <- c("candidato", "genero", "pais")
+
+candidaturas$candidato <- trimws(candidaturas$candidato)
+candidaturas$candidato <- tolower(candidaturas$candidato)
+candidaturas$candidato <- chartr("áéíóúñü", "aeiounu", candidaturas$candidato)
+
+candidatos$candidato <- trimws(candidatos$candidato)
+candidatos$candidato <- tolower(candidatos$candidato)
+candidatos$candidato <- chartr("áéíóúñü", "aeiounu", candidatos$candidato)
+```
+
+```{r}
+candidaturas$gano <- ifelse(candidaturas$resultado == "ganador", 1, 0)
+
+candidaturas$vuelta[candidaturas$vuelta == "1ra vuelta"] <- "primera"
+candidaturas$vuelta[candidaturas$vuelta == "2da vuelta"] <- "segunda"
+```
+
+```{r}
+candidaturas$eleccion <- candidaturas$anio
+candidaturas$eleccion[candidaturas$anio == 2000] <- 1999
+candidaturas$eleccion[candidaturas$anio == 2006] <- 2005
+candidaturas$eleccion[candidaturas$anio == 2010] <- 2009
+
+
+```
+
+
+```{r}
+base <- candidaturas %>%
+  left_join(candidatos, by = "candidato") %>%
+  left_join(resumen, by = c("candidato", "eleccion")) %>%
+  left_join(elecciones, by = c("eleccion", "vuelta"))
+
+base$votos <- base$votos * 100
+
+#Escala ideológica: de -3 (extrema izquierda) a 3 (extrema derecha), con el centro en 0, (centro/populista se considera centro)
+
+base <- base |>
+  mutate(ideologia = case_when(
+    sector == "extrema izquierda" ~ -3,
+    sector == "izquierda"         ~ -2,
+    sector == "centroizquierda"   ~ -1,
+    sector == "centro"            ~  0,
+    sector == "centro/populista"  ~  0,
+    sector == "centroderecha"     ~  1,
+    sector == "derecha"           ~  2,
+    sector == "extrema derecha"   ~  3))
+```
+
+```{r}
+base[is.na(base$escandalo), c("candidato", "anio", "vuelta")]
+```
+#En esta sección se revisa cómo se distribuyen las variables principales de la base: género del candidato y presencia de escándalos.
+
+```{r}
+table(base$genero)
+table(base$escandalo)
+table(base$genero, base$escandalo)
+```
+
+# Cantidad de escándalos por candidatura, magnitud maxima y promedios 
+```{r}
+
+table(base$n_escandalos)
+table(base$magnitud_max)
+
+
+base %>%
+  group_by(genero) %>%
+  summarise(
+    promedio_escandalos = mean(n_escandalos),
+    promedio_magnitud = mean(magnitud_max)
+  )
+```
+
+# Solo los meses en que hubo escándalo y sus caracteristicas
+```{r}
+solo_escandalos <- filter(escandalos, escandalo == 1)
+
+table(solo_escandalos$tipo)
+
+table(solo_escandalos$cercania)
+
+table(solo_escandalos$genero, solo_escandalos$tipo)
+```
+
+# Resumen de las variables numéricas (mínimo, promedio, máximo, etc.)
+```{r}
+summary(base[, c("votos", "n_escandalos", "magnitud_max", "desempleo", "ipc")])
+
+# Promedio de votos y porcentaje de candidaturas ganadoras según género
+base %>%
+  group_by(genero) %>%
+  summarise(
+    promedio_votos = mean(votos),
+    porcentaje_gano = mean(gano) * 100
+  )
+
+# Promedio de votos según vuelta (para mostrar que los votos no son comparables entre primarias, primera y segunda vuelta)
+base %>%
+  group_by(vuelta) %>%
+  summarise(promedio_votos = mean(votos))
+```
+
+#Ahora vemos graficos
+
+```{r}
+# Gráfico 1: cuántas candidaturas tuvieron 0, 1, 2, 3 o 4 escándalos
+barplot(table(base$n_escandalos),
+        main = "Cantidad de escándalos por candidatura",
+        xlab = "Cantidad de escándalos",
+        ylab = "Número de candidaturas")
+
+# Gráfico 2: cuántos escándalos hubo de cada tipo
+barplot(table(solo_escandalos$tipo),
+        names.arg = c("Económico", "Corrupción", "Farándula", "Controversia"),
+        main = "Escándalos según tipo",
+        ylab = "Número de escándalos")
+
+# Gráfico 3: promedio de votos según género y vuelta
+promedio_vuelta <- tapply(base$votos, list(base$genero, base$vuelta), mean)
+
+barplot(promedio_vuelta,
+        beside = TRUE,
+        legend.text = c("Hombre", "Mujer"),
+        ylim = c(0, 100),
+        main = "Promedio de votos según género y vuelta",
+        ylab = "% de votos promedio")
+```
+
+#Veremos los modelos ahora
+
+```{r}
+# Modelo 1: solo variables de interés
+m1_votos <- lm(votos ~ n_escandalos + genero,
+               data = base)
+
+# Modelo 2: se agregan variables políticas
+m2_votos <- lm(votos ~ n_escandalos + genero + magnitud_max + ideologia + vuelta,
+               data = base)
+
+# Modelo 3: se agregan controles económicos
+m3_votos <- lm(votos ~ n_escandalos + genero + magnitud_max + ideologia + vuelta + desempleo + ipc,
+               data = base)
+
+# Modelo 4: modelo multiplicativo (interacción escándalos × género)
+m4_votos <- lm(votos ~ n_escandalos * genero + magnitud_max + ideologia + vuelta + desempleo + ipc,
+               data = base)
+```
+
+
+```{r}
+# Modelo 5: solo variables de interés
+m1_gano <- glm(gano ~ n_escandalos + genero,
+               data = base, family = "binomial")
+
+# Modelo 6: se agregan variables políticas
+m2_gano <- glm(gano ~ n_escandalos + genero + magnitud_max + ideologia + vuelta,
+               data = base, family = "binomial")
+
+# Modelo 7: se agregan controles económicos
+m3_gano <- glm(gano ~ n_escandalos + genero + magnitud_max + ideologia + vuelta + desempleo + ipc,
+               data = base, family = "binomial")
+
+# Modelo 8: modelo multiplicativo (interacción escándalos × género)
+m4_gano <- glm(gano ~ n_escandalos * genero + magnitud_max + ideologia + vuelta + desempleo + ipc,
+               data = base, family = "binomial")
+```
+
+```{r}
+library(modelsummary)
+
+cm <- c("(Intercept)" = "(Intercepto)",
+        "n_escandalos" = "N° de escándalos",
+        "genero" = "Mujer",
+        "n_escandalos:genero" = "N° de escándalos × Mujer",
+        "magnitud_max" = "Magnitud del escándalo",
+        "ideologia" = "Ideología (izquierda a derecha)",
+        "vueltaprimera" = "Primera vuelta",
+        "vueltasegunda" = "Segunda vuelta",
+        "desempleo" = "Desempleo",
+        "ipc" = "IPC")
+```
+
+```{r}
+modelos_votos <- list("Modelo 1" = m1_votos,
+                      "Modelo 2" = m2_votos,
+                      "Modelo 3" = m3_votos,
+                      "Modelo 4" = m4_votos)
+
+
+modelos_gano <- list("Modelo 5" = m1_gano,
+                     "Modelo 6" = m2_gano,
+                     "Modelo 7" = m3_gano,
+                     "Modelo 8" = m4_gano)
+```
+
+
+#Guardar las tablas!!!!
+```{r}
+# Guardar la tabla de modelos lineales como HTML (para abrir en Word)
+modelsummary(modelos_votos,
+             gof_omit = "AIC|BIC|Log.Lik.|F|RMSE",
+             coef_map = cm,
+             stars = T,
+             output = "output/tabla_lineales.html")
+
+# Guardar la tabla de modelos logit como HTML (para abrir en Word)
+modelsummary(modelos_gano,
+             exponentiate = T,
+             gof_omit = "AIC|BIC|Log.Lik.|F|RMSE",
+             coef_map = cm,
+             stars = T,
+             output = "output/tabla_logit.html")
+```
+
