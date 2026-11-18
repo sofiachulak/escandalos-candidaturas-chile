@@ -12,14 +12,14 @@ date: "2026-11-16"
 library(readxl)
 library(dplyr)
 library(lubridate)
+library(modelsummary)
+library(survival)
 ```
 
 ```{r}
 desempleo <- read_excel("data/desempleo.xlsx", skip = 2)
 ipc <- read_excel("data/ipc.xlsx", skip = 2)
-```
 
-```{r}
 desempleo <- desempleo[, c(1, 5)]
 names(desempleo) <- c("mes", "desempleo")
 
@@ -27,13 +27,16 @@ ipc <- ipc[, c(1, 2)]
 names(ipc) <- c("mes", "ipc")
 ```
 
+#Unir indicadores economicos 
 ```{r}
+
 desempleo$mes <- as.Date(desempleo$mes)
 ipc$mes <- as.Date(ipc$mes)
 
 economia <- left_join(desempleo, ipc, by = "mes")
 ```
 
+#Crear tabla con las elecciones 
 ```{r}
 elecciones <- data.frame(
   eleccion = c(1989, 1993, 1993, 1999, 1999, 2005, 2005, 2009, 2009,
@@ -50,6 +53,7 @@ elecciones <- data.frame(
 )
 ```
 
+#Aca calculamos el promedio de los indicadores economicos que usamos de los 12 meses anteriories
 ```{r}
 elecciones$desempleo <- NA
 elecciones$ipc <- NA
@@ -62,20 +66,7 @@ for (i in 1:nrow(elecciones)) {
 }
 ```
 
-```{r}
-excel_sheets("data/base.xlsx")
-```
-```{r}
-candidatos   <- read_excel("data/base.xlsx", sheet = "candidatos")
-candidaturas <- read_excel("data/base.xlsx", sheet = "candidaturas")
-escandalos   <- read_excel("data/base.xlsx", sheet = "escandalos")
-```
-```{r}
-names(candidatos)
-names(candidaturas)
-names(escandalos)
-```
-
+#Cargamos la base de esandalos y renombramos las columnas, tambien dejamos todos los nombres en minusculas para que sea mas facil
 ```{r}
 escandalos <- read_excel("data/base.xlsx", sheet = "escandalos")
 
@@ -87,27 +78,13 @@ escandalos$candidato <- tolower(escandalos$candidato)
 escandalos$candidato <- chartr("áéíóúñü", "aeiounu", escandalos$candidato)
 ```
 
+#Los meses sin escandalos les dejamos magnitud vacía y creamos la variable de cada mes para poder indentificar los escandalos dentro del rango de meses 
 ```{r}
 escandalos$magnitud[is.na(escandalos$magnitud)] <- 0
+escandalos$mes_fecha <- as.Date(paste(escandalos$anio, escandalos$mes, "01", sep = "-"))
 ```
 
-```{r}
-escandalos$eleccion <- escandalos$anio
-escandalos$eleccion[escandalos$anio == 2000] <- 1999
-escandalos$eleccion[escandalos$anio == 2006] <- 2005
-escandalos$eleccion[escandalos$anio == 2010] <- 2009
-
-resumen <- escandalos %>%
-  group_by(eleccion, candidato) %>%
-  summarise(
-    n_escandalos = sum(escandalo),
-    magnitud_max = max(magnitud),
-    .groups = "drop"
-  )
-
-resumen$escandalo <- ifelse(resumen$n_escandalos > 0, 1, 0)
-```
-
+#Cargamos las pestañas de candidaturas y candidaturas 
 ```{r}
 candidaturas <- read_excel("data/base.xlsx", sheet = "candidaturas")
 names(candidaturas) <- c("candidato", "anio", "vuelta", "partido", "sector",
@@ -125,6 +102,7 @@ candidatos$candidato <- tolower(candidatos$candidato)
 candidatos$candidato <- chartr("áéíóúñü", "aeiounu", candidatos$candidato)
 ```
 
+#Creamos la variable si gano o no
 ```{r}
 candidaturas$gano <- ifelse(candidaturas$resultado == "ganador", 1, 0)
 
@@ -132,20 +110,45 @@ candidaturas$vuelta[candidaturas$vuelta == "1ra vuelta"] <- "primera"
 candidaturas$vuelta[candidaturas$vuelta == "2da vuelta"] <- "segunda"
 ```
 
+#Creamos la variable que indican el año de la eleccion, las segundas vueltas que se realizan en enero del año siguiente las asignamos al año anterior por temas de orden
 ```{r}
 candidaturas$eleccion <- candidaturas$anio
 candidaturas$eleccion[candidaturas$anio == 2000] <- 1999
 candidaturas$eleccion[candidaturas$anio == 2006] <- 2005
 candidaturas$eleccion[candidaturas$anio == 2010] <- 2009
 
-
 ```
 
+#Escándalos por candidatura, cada candidatura suma solo los escándalos ocurridos en los 12 meses anteriores a su votación.
 
+```{r}
+
+escandalos_meses<- escandalos[, c("candidato", "mes_fecha", "escandalo", "magnitud")]
+
+cruce <- candidaturas |>
+  select(candidato, eleccion, vuelta) |>
+  left_join(elecciones[, c("eleccion", "vuelta", "fecha")], by = c("eleccion", "vuelta")) |>
+  left_join(escandalos_meses, by = "candidato")
+
+cruce <- cruce |>
+  filter(mes_fecha >= floor_date(fecha, "month") - months(11),
+         mes_fecha <= floor_date(fecha, "month"))
+
+resumen <- cruce |>
+  group_by(candidato, eleccion, vuelta) |>
+  summarise(
+    n_escandalos = sum(escandalo),   # cantidad de escándalos
+    magnitud_max = max(magnitud),    # gravedad del escándalo más grave
+    .groups = "drop"
+  )
+
+resumen$escandalo <- if_else(resumen$n_escandalos > 0, 1, 0)
+```
+#Aqui unimos todas las tablas que hicimos a la base de candidaturas
 ```{r}
 base <- candidaturas %>%
   left_join(candidatos, by = "candidato") %>%
-  left_join(resumen, by = c("candidato", "eleccion")) %>%
+    left_join(resumen, by = c("candidato", "eleccion", "vuelta")) |>
   left_join(elecciones, by = c("eleccion", "vuelta"))
 
 base$votos <- base$votos * 100
@@ -162,12 +165,41 @@ base <- base |>
     sector == "centroderecha"     ~  1,
     sector == "derecha"           ~  2,
     sector == "extrema derecha"   ~  3))
+
+#Candidaturas sin meses de escándalos en su ventana
+base$n_escandalos[is.na(base$n_escandalos)] <- 0
+base$magnitud_max[is.na(base$magnitud_max)] <- 0
+base$escandalo[is.na(base$escandalo)] <- 0
+
+#Carrera: la votación en que cada candidato compitió contra sus rivales (en 2013, 2017 y 2021 hubo dos primarias el mismo día, una por coalición)
+
+base <- base |>
+  mutate(carrera = paste(eleccion, vuelta),
+         carrera = case_when(
+           vuelta == "primaria" & candidato %in% c("pablo longueira", "andres allamand") ~ "2013 primaria alianza",
+           vuelta == "primaria" & candidato %in% c("beatriz sanchez", "alberto mayol") ~ "2017 primaria frente amplio",
+           vuelta == "primaria" & candidato %in% c("gabriel boric", "daniel jadue") ~ "2021 primaria apruebo dignidad",
+           TRUE ~ carrera))
+```
+
+#Comprobamos la base final y que cada carrera tenga ganador y perdedor
+```{r}
+nrow(base)
+sum(is.na(base$genero))
+sum(is.na(base$desempleo))
+sum(is.na(base$ideologia))
+
+table(base$carrera, base$gano)
 ```
 
 ```{r}
-base[is.na(base$escandalo), c("candidato", "anio", "vuelta")]
+nrow(base)
+sum(is.na(base$genero))
+sum(is.na(base$desempleo))
+sum(is.na(base$ideologia))
 ```
-#En esta sección se revisa cómo se distribuyen las variables principales de la base: género del candidato y presencia de escándalos.
+
+#Revisamos cuantas candidaturas hay por género, presencia de escándalos y el cruce de ambas 
 
 ```{r}
 table(base$genero)
@@ -201,11 +233,11 @@ table(solo_escandalos$cercania)
 table(solo_escandalos$genero, solo_escandalos$tipo)
 ```
 
-# Resumen de las variables numéricas (mínimo, promedio, máximo, etc.)
+# Resumen de las variables numéricas y comparamos los votos y victorias por genero 
 ```{r}
 summary(base[, c("votos", "n_escandalos", "magnitud_max", "desempleo", "ipc")])
 
-# Promedio de votos y porcentaje de candidaturas ganadoras según género
+#Promedio de votos y porcentaje de candidaturas ganadoras segun genero
 base %>%
   group_by(genero) %>%
   summarise(
@@ -213,7 +245,7 @@ base %>%
     porcentaje_gano = mean(gano) * 100
   )
 
-# Promedio de votos según vuelta (para mostrar que los votos no son comparables entre primarias, primera y segunda vuelta)
+#Promedio de votos segun vuelta (para mostrar que los votos no son comparables entre primarias, primera y segunda vuelta)
 base %>%
   group_by(vuelta) %>%
   summarise(promedio_votos = mean(votos))
@@ -222,41 +254,43 @@ base %>%
 #Ahora vemos graficos
 
 ```{r}
-# Gráfico 1: cuántas candidaturas tuvieron 0, 1, 2, 3 o 4 escándalos
+#1: la cantidad de escándalos por candidatura
 barplot(table(base$n_escandalos),
         main = "Cantidad de escándalos por candidatura",
         xlab = "Cantidad de escándalos",
         ylab = "Número de candidaturas")
 
-# Gráfico 2: cuántos escándalos hubo de cada tipo
+#2: cuántos escandalos hubo de cada tipo
 barplot(table(solo_escandalos$tipo),
         names.arg = c("Económico", "Corrupción", "Farándula", "Controversia"),
         main = "Escándalos según tipo",
         ylab = "Número de escándalos")
 
-# Gráfico 3: promedio de votos según género y vuelta
+#3: promedio de votos segun genero y vuelta
 promedio_vuelta <- tapply(base$votos, list(base$genero, base$vuelta), mean)
 
-barplot(promedio_vuelta,
-        beside = TRUE,
-        legend.text = c("Hombre", "Mujer"),
-        ylim = c(0, 100),
-        main = "Promedio de votos según género y vuelta",
-        ylab = "% de votos promedio")
+posiciones <- barplot(promedio_vuelta,
+                      beside = TRUE,
+                      legend.text = c("Hombre", "Mujer"),
+                      ylim = c(0, 100),
+                      main = "Promedio de votos según género y vuelta",
+                      ylab = "% de votos promedio")
+text(posiciones, promedio_vuelta + 4, labels = paste0(round(promedio_vuelta, 1), "%"))
+          
 ```
 
-#Veremos los modelos ahora
+#Veremos los modelos ahora, primero vemos modelos lineales que explican el porcentaje de votos de cada candidatura, el 4 es de caracter multiplicativo
 
 ```{r}
-# Modelo 1: solo variables de interés
+# Modelo 1: solo variables de interes
 m1_votos <- lm(votos ~ n_escandalos + genero,
                data = base)
 
-# Modelo 2: se agregan variables políticas
+# Modelo 2: se agregan variables politicas
 m2_votos <- lm(votos ~ n_escandalos + genero + magnitud_max + ideologia + vuelta,
                data = base)
 
-# Modelo 3: se agregan controles económicos
+# Modelo 3: se agregan controles economicos
 m3_votos <- lm(votos ~ n_escandalos + genero + magnitud_max + ideologia + vuelta + desempleo + ipc,
                data = base)
 
@@ -265,25 +299,22 @@ m4_votos <- lm(votos ~ n_escandalos * genero + magnitud_max + ideologia + vuelta
                data = base)
 ```
 
-
+#Aqui usamos un modelo logit condicional (clogit) que explican la probabilidad de ganar la vuelta comparando a cada candidatura solo son sus rivales de la misma carrera, strata(carrera) significa que cada candidatura se comara solo con sus rivales de la carrera.
 ```{r}
-# Modelo 5: solo variables de interés
-m1_gano <- glm(gano ~ n_escandalos + genero,
-               data = base, family = "binomial")
+# Modelo 5: solo variables de interes
+c1_gano <- clogit(gano ~ n_escandalos + genero + strata(carrera),
+                  data = base)
 
-# Modelo 6: se agregan variables políticas
-m2_gano <- glm(gano ~ n_escandalos + genero + magnitud_max + ideologia + vuelta,
-               data = base, family = "binomial")
+# Modelo 6: se agregan magnitud e ideologia
+c2_gano <- clogit(gano ~ n_escandalos + genero + magnitud_max + ideologia + strata(carrera),
+                  data = base)
 
-# Modelo 7: se agregan controles económicos
-m3_gano <- glm(gano ~ n_escandalos + genero + magnitud_max + ideologia + vuelta + desempleo + ipc,
-               data = base, family = "binomial")
-
-# Modelo 8: modelo multiplicativo (interacción escándalos × género)
-m4_gano <- glm(gano ~ n_escandalos * genero + magnitud_max + ideologia + vuelta + desempleo + ipc,
-               data = base, family = "binomial")
+# Modelo 7: modelo multiplicativo (interacción escandalos × genero)
+c3_gano <- clogit(gano ~ n_escandalos * genero + magnitud_max + ideologia + strata(carrera),
+                  data = base)
 ```
 
+#Asignamos nombres a las variables para las tablas y agrupamos en los modelos
 ```{r}
 library(modelsummary)
 
@@ -299,6 +330,7 @@ cm <- c("(Intercept)" = "(Intercepto)",
         "ipc" = "IPC")
 ```
 
+#Listas de modelos
 ```{r}
 modelos_votos <- list("Modelo 1" = m1_votos,
                       "Modelo 2" = m2_votos,
@@ -306,10 +338,9 @@ modelos_votos <- list("Modelo 1" = m1_votos,
                       "Modelo 4" = m4_votos)
 
 
-modelos_gano <- list("Modelo 5" = m1_gano,
-                     "Modelo 6" = m2_gano,
-                     "Modelo 7" = m3_gano,
-                     "Modelo 8" = m4_gano)
+modelos_clogit <- list("Modelo 5" = c1_gano,
+                       "Modelo 6" = c2_gano,
+                       "Modelo 7" = c3_gano)
 ```
 
 
@@ -322,12 +353,27 @@ modelsummary(modelos_votos,
              stars = T,
              output = "output/tabla_lineales.html")
 
-# Guardar la tabla de modelos logit como HTML (para abrir en Word)
-modelsummary(modelos_gano,
+# Guardar la tabla de modelos clogit como HTML (para abrir en Word)
+modelsummary(modelos_clogit,
              exponentiate = T,
              gof_omit = "AIC|BIC|Log.Lik.|F|RMSE",
              coef_map = cm,
              stars = T,
-             output = "output/tabla_logit.html")
+             output = "output/tabla_clogit.html")
+```
+
+```{r}
+# Ver la tabla de modelos lineales
+modelsummary(modelos_votos,
+             gof_omit = "AIC|BIC|Log.Lik.|F|RMSE",
+             coef_map = cm,
+             stars = T)
+
+# Ver la tabla de modelos clogit
+modelsummary(modelos_clogit,
+             exponentiate = T,
+             gof_omit = "AIC|BIC|Log.Lik.|F|RMSE",
+             coef_map = cm,
+             stars = T)
 ```
 
